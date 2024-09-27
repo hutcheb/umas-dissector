@@ -60,6 +60,33 @@ static int hf_umas_read_variable_list_base_offset;
 static int hf_umas_read_variable_list_offset;
 static int hf_umas_read_variable_list_array_length;
 
+static int hf_umas_init_comms_max_frame_size;
+static int hf_umas_init_comms_firmware_version;
+static int hf_umas_init_comms_internal_code;
+static int hf_umas_init_comms_hostname_length;
+static int hf_umas_init_comms_hostname;
+
+static int hf_umas_read_id_range;
+static int hf_umas_read_id_ident;
+static int hf_umas_read_id_model;
+static int hf_umas_read_id_com_version;
+static int hf_umas_read_id_com_patch;
+static int hf_umas_read_id_int_version;
+static int hf_umas_read_id_hardware_version;
+static int hf_umas_read_id_crash_code;
+static int hf_umas_read_id_hostname_length;
+static int hf_umas_read_id_hostname;
+static int hf_umas_memory_block_id_block_type;
+static int hf_umas_memory_block_id_folio;
+static int hf_umas_memory_block_id_status;
+static int hf_umas_memory_block_id_memory_length;
+static int hf_umas_read_id_number_of_memory_banks;
+
+static int hf_umas_read_memory_range;
+static int hf_umas_read_memory_length;
+static int hf_umas_read_memory_block_data;
+
+
 /* Initialize the subtree pointers */
 static int ett_umas;
 static int ett_umas_hdr;
@@ -116,6 +143,12 @@ static const value_string function_code_vals[] = {
     { GET_STATUS_MODULE,        "Get Status Module" },
     { RESPONSE_OK,              "Response Meaning OK" },
     { RESPONSE_ERROR,           "Response Meaning Error" },
+    { 0,                      NULL }
+};
+
+static const value_string memory_block_id_type[] = {
+    { RAM_CPU,                "PLC RAM" },
+    { SD_CARD,                "SD Card" },
     { 0,                      NULL }
 };
 
@@ -261,6 +294,96 @@ dissect_umas_pdu_request(tvbuff_t* tvb, packet_info* pinfo, proto_tree* tree, vo
 
 /* Dissect the Modbus Payload.  Called from either Modbus/TCP or Modbus RTU Dissector */
 static int
+dissect_umas_pdu_response(tvbuff_t* tvb, packet_info* pinfo, proto_tree* tree, void* data, uint8_t function_code, int offset)
+{
+    switch (function_code) {
+    case INIT_COMM:
+        uint16_t max_frame_size = tvb_get_uint16(tvb, offset, ENC_LITTLE_ENDIAN);
+        uint16_t firmware_version = tvb_get_uint16(tvb, offset + 2, ENC_LITTLE_ENDIAN);
+        uint32_t internal_code = tvb_get_uint32(tvb, offset + 8, ENC_LITTLE_ENDIAN);
+        uint8_t hostname_length = tvb_get_uint8(tvb, offset + 12);
+        const char* hostname = (char*)tvb_get_string_enc(wmem_file_scope(), tvb, offset + 13, hostname_length, ENC_UTF_8);
+
+        proto_tree_add_uint(tree, hf_umas_init_comms_max_frame_size, tvb, offset, 2, max_frame_size);
+        proto_tree_add_uint(tree, hf_umas_init_comms_firmware_version, tvb, offset + 2, 2, firmware_version);
+        proto_tree_add_uint(tree, hf_umas_init_comms_internal_code, tvb, offset + 8, 4, internal_code);
+        proto_tree_add_uint(tree, hf_umas_init_comms_hostname_length, tvb, offset + 12, 1, hostname_length);
+        proto_tree_add_string(tree, hf_umas_init_comms_hostname, tvb, offset + 13, hostname_length, hostname);
+
+        break;
+    case READ_ID:
+        uint16_t umas_read_id_range = tvb_get_uint16(tvb, offset, ENC_LITTLE_ENDIAN);
+        uint32_t umas_read_id_ident = tvb_get_uint32(tvb, offset + 2, ENC_LITTLE_ENDIAN);
+        uint16_t umas_read_id_model = tvb_get_uint16(tvb, offset + 6, ENC_LITTLE_ENDIAN);
+        uint16_t umas_read_id_com_version = tvb_get_uint16(tvb, offset + 8, ENC_LITTLE_ENDIAN);
+        uint16_t umas_read_id_com_patch = tvb_get_uint16(tvb, offset + 10, ENC_LITTLE_ENDIAN);
+        uint16_t umas_read_id_int_version = tvb_get_uint16(tvb, offset + 12, ENC_LITTLE_ENDIAN);
+        uint16_t umas_read_id_hardware_version = tvb_get_uint16(tvb, offset + 14, ENC_LITTLE_ENDIAN);
+        uint32_t umas_read_id_crash_code = tvb_get_uint32(tvb, offset + 16, ENC_LITTLE_ENDIAN);
+        uint8_t umas_read_id_hostname_length = tvb_get_uint8(tvb, offset + 22);
+        const char* umas_read_id_hostname = (char*)tvb_get_string_enc(wmem_file_scope(), tvb, offset + 23, umas_read_id_hostname_length, ENC_UTF_8);
+        uint8_t umas_read_id_number_of_memory_banks = tvb_get_uint8(tvb, offset + 23 + umas_read_id_hostname_length);
+
+        proto_tree_add_uint(tree, hf_umas_read_id_range, tvb, offset, 2, umas_read_id_range);
+        proto_tree_add_uint(tree, hf_umas_read_id_ident, tvb, offset + 2, 4, umas_read_id_ident);
+
+        proto_tree_add_uint(tree, hf_umas_read_id_model, tvb, offset + 6, 2, umas_read_id_model);
+        proto_tree_add_uint(tree, hf_umas_read_id_com_version, tvb, offset + 8, 2, umas_read_id_com_version);
+        proto_tree_add_uint(tree, hf_umas_read_id_com_patch, tvb, offset + 10, 2, umas_read_id_com_patch);
+        proto_tree_add_uint(tree, hf_umas_read_id_int_version, tvb, offset + 12, 2, umas_read_id_int_version);
+
+        proto_tree_add_uint(tree, hf_umas_read_id_hardware_version, tvb, offset + 14, 2, umas_read_id_hardware_version);
+        proto_tree_add_uint(tree, hf_umas_read_id_crash_code, tvb, offset + 16, 4, umas_read_id_crash_code);
+        proto_tree_add_uint(tree, hf_umas_read_id_hostname_length, tvb, offset + 22, 1, umas_read_id_hostname_length);
+        proto_tree_add_string(tree, hf_umas_read_id_hostname, tvb, offset + 23, umas_read_id_hostname_length, umas_read_id_hostname);
+
+        proto_tree_add_uint(tree, hf_umas_read_id_number_of_memory_banks, tvb, offset + 23 + umas_read_id_hostname_length, 1, umas_read_id_number_of_memory_banks);
+        proto_tree* block_list_tree = proto_tree_add_subtree(tree, tvb, offset + 23 + umas_read_id_hostname_length + 1, umas_read_id_number_of_memory_banks * 4, ett_umas_read_variable_list, NULL, "Block List");
+
+
+        int block_start_offset = offset + 23 + umas_read_id_hostname_length + 1;
+        uint8_t umas_memory_block_id_block_type;
+        uint8_t umas_memory_block_id_folio;
+        uint16_t umas_memory_block_id_status;
+        uint32_t umas_memory_block_id_memory_length;
+        proto_tree* block_list_item_tree;
+
+        char item_name[100];
+        int i;
+        int current_offset = offset + 5;
+        for (i = 0; i < umas_read_id_number_of_memory_banks; ++i) {
+            umas_memory_block_id_block_type = tvb_get_uint8(tvb, block_start_offset);
+            umas_memory_block_id_folio = tvb_get_uint8(tvb, block_start_offset + 1);
+            umas_memory_block_id_status = tvb_get_uint16(tvb, block_start_offset + 2, ENC_LITTLE_ENDIAN);
+            umas_memory_block_id_memory_length = tvb_get_uint32(tvb, block_start_offset + 4, ENC_LITTLE_ENDIAN);
+
+            sprintf(item_name, "Type:- %s, Folio:- %d, Status:- %d, Length:- %d", val_to_str(umas_memory_block_id_block_type, memory_block_id_type, "UNKNOWN"), umas_memory_block_id_folio, umas_memory_block_id_status, umas_memory_block_id_memory_length);
+            block_list_item_tree = proto_tree_add_subtree(block_list_tree, tvb, block_start_offset, 8, ett_umas_read_variable_list_item, NULL, item_name);
+
+            proto_tree_add_uint(block_list_item_tree, hf_umas_memory_block_id_block_type, tvb, block_start_offset, 1, umas_memory_block_id_block_type);
+            proto_tree_add_uint(block_list_item_tree, hf_umas_memory_block_id_folio, tvb, block_start_offset + 1, 1, umas_memory_block_id_folio);
+            proto_tree_add_uint(block_list_item_tree, hf_umas_memory_block_id_status, tvb, block_start_offset + 2, 2, umas_memory_block_id_status);
+            proto_tree_add_uint(block_list_item_tree, hf_umas_memory_block_id_memory_length, tvb, block_start_offset + 4, 4, umas_memory_block_id_memory_length);
+
+            block_start_offset += 8;
+        }
+        break;
+    case READ_MEMORY_BLOCK:
+        uint8_t umas_read_memory_range = tvb_get_uint8(tvb, offset);
+        uint16_t umas_read_memory_length = tvb_get_uint16(tvb, offset + 1, ENC_LITTLE_ENDIAN);
+
+        proto_tree_add_uint(tree, hf_umas_read_memory_range, tvb, offset, 1, umas_read_memory_range);
+        proto_tree_add_uint(tree, hf_umas_read_memory_length, tvb, offset + 1, 2, umas_read_memory_length);
+        proto_tree_add_item(tree, hf_umas_read_memory_block_data, tvb, offset + 3, umas_read_memory_length, ENC_NA);
+
+    default:
+        break;
+    };
+    return tvb_captured_length(tvb);
+}
+
+/* Dissect the Modbus Payload.  Called from either Modbus/TCP or Modbus RTU Dissector */
+static int
 dissect_umas(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
 {
     proto_item*     mi;
@@ -361,7 +484,7 @@ dissect_umas(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
         break;
     case RESPONSE_ERROR:
         pkt_type_str = "Error";
-        func_string = "TODO:- Need to look into getting the conversation data";
+        func_string = val_to_str(pkt_info->function_code, function_code_vals, "Unknown function (%d)");
     default:
         pkt_type_str = "Query";
         func_string = val_to_str(umas_data.function_code, function_code_vals, "Unknown function (%d)");
@@ -385,7 +508,7 @@ dissect_umas(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
 
     switch (umas_data.function_code) {
     case RESPONSE_OK:
-        break;
+        dissect_umas_pdu_response(tvb, pinfo, umas_tree, data, pkt_info->function_code, offset + 2);
     case RESPONSE_ERROR:
         break;
     default:
@@ -509,6 +632,122 @@ proto_register_umas(void)
             { "Read Variable Array Length", "umas.read_variable.list.array_length",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
+        },
+        { &hf_umas_init_comms_max_frame_size,
+            { "Init Comms Response Max Frame Size", "umas.init_comms.max_frame_size",
+            FT_UINT16, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_umas_init_comms_firmware_version,
+            { "Init Comms Response Firmware Version", "umas.init_comms.firmware_version",
+            FT_UINT16, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_umas_init_comms_internal_code,
+            { "Init Comms Response Internal Code", "umas.init_comms.internal_code",
+            FT_UINT32, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_umas_init_comms_hostname_length,
+            { "Init Comms Response Hostname Length", "umas.init_comms.hostname_length",
+            FT_UINT8, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_umas_init_comms_hostname,
+            { "Init Comms Response Hostname", "umas.init_comms.hostname",
+            FT_STRING, BASE_STR_WSP, NULL, 0x0,
+            NULL, HFILL }
+        },
+
+        { &hf_umas_read_id_range,
+            { "Read ID Response Range", "umas.read_id.range",
+            FT_UINT16, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_umas_read_id_ident,
+            { "Read ID Response Identification", "umas.read_id.id",
+            FT_UINT32, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_umas_read_id_model,
+            { "Read ID Response Model", "umas.read_id.model",
+            FT_UINT16, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_umas_read_id_com_version,
+            { "Read ID Response Com Version", "umas.read_id.com_version",
+            FT_UINT16, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_umas_read_id_com_patch,
+            { "Read ID Response Com Patch", "umas.read_id.com_patch",
+            FT_UINT16, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_umas_read_id_int_version,
+            { "Read ID Response Int Version", "umas.read_id.int_version",
+            FT_UINT16, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_umas_read_id_hardware_version,
+            { "Read ID Response Hardware Version", "umas.read_id.hardware_version",
+            FT_UINT16, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_umas_read_id_crash_code,
+            { "Read ID Response Crash Code", "umas.read_id.crash_code",
+            FT_UINT32, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_umas_read_id_hostname_length,
+            { "Read ID Response Hostname Length", "umas.read_id.hostname_length",
+            FT_UINT8, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_umas_read_id_hostname,
+            { "Read ID Response Hostname", "umas.read_id.hostname",
+            FT_STRING, BASE_STR_WSP, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_umas_memory_block_id_block_type,
+            { "Read ID Response Block Type", "umas.read_id.block_type",
+            FT_UINT8, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_umas_memory_block_id_folio,
+            { "Read ID Response Folio", "umas.read_id.folio",
+            FT_UINT8, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_umas_memory_block_id_status,
+            { "Read ID Response Status", "umas.read_id.status",
+            FT_UINT16, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_umas_memory_block_id_memory_length,
+            { "Read ID Response Memory Length", "umas.read_id.memory_length",
+            FT_UINT32, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_umas_read_id_number_of_memory_banks,
+            { "Read ID Response Memory Bank Count", "umas.read_id.no_memory_bank",
+            FT_UINT8, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+
+        { &hf_umas_read_memory_range,
+            { "Range", "umas.read_memory_block.range",
+            FT_UINT8, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_umas_read_memory_length,
+            { "Length", "umas.read_memory_block.length",
+            FT_UINT16, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_umas_read_memory_block_data,
+            { "Data",  "umas.read_memory_block.data",
+            FT_BYTES,  BASE_NONE, NULL,    0x0, NULL, HFILL }
         },
     };
 

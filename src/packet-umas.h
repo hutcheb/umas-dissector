@@ -52,6 +52,10 @@
 #define RESPONSE_OK                 0xFE
 #define RESPONSE_ERROR              0xFD
 
+/* UMAS protocol function codes */
+#define RAM_CPU                     0x01
+#define SD_CARD                     0x04
+
 typedef struct {
     uint32_t req_frame_num;
     uint8_t function_code;

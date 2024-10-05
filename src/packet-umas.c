@@ -34,64 +34,13 @@ void proto_reg_handoff_modbus(void);
 static int proto_umas;
 extern int proto_modbus;
 
-static int hf_modbus_data;
-static int hf_umas_pairing_key;
-static int hf_umas_func_code;
-static int hf_umas_init_sub_code;
-static int hf_umas_project_info_sub_code;
-
-static int hf_umas_read_block_range;
-static int hf_umas_read_block_block_number;
-static int hf_umas_read_block_offset;
-static int hf_umas_read_block_number_bytes;
-
-static int hf_umas_data_dictionary_record_type;
-static int hf_umas_data_dictionary_record_index;
-static int hf_umas_data_dictionary_hardware_id;
-static int hf_umas_data_dictionary_block_number;
-static int hf_umas_data_dictionary_offset;
-
-static int hf_umas_read_variable_crc;
-static int hf_umas_read_variable_count;
-static int hf_umas_read_variable_list_is_array;
-static int hf_umas_read_variable_list_data_type_size;
-static int hf_umas_read_variable_list_block_number;
-static int hf_umas_read_variable_list_base_offset;
-static int hf_umas_read_variable_list_offset;
-static int hf_umas_read_variable_list_array_length;
-
-static int hf_umas_init_comms_max_frame_size;
-static int hf_umas_init_comms_firmware_version;
-static int hf_umas_init_comms_internal_code;
-static int hf_umas_init_comms_hostname_length;
-static int hf_umas_init_comms_hostname;
-
-static int hf_umas_read_id_range;
-static int hf_umas_read_id_ident;
-static int hf_umas_read_id_model;
-static int hf_umas_read_id_com_version;
-static int hf_umas_read_id_com_patch;
-static int hf_umas_read_id_int_version;
-static int hf_umas_read_id_hardware_version;
-static int hf_umas_read_id_crash_code;
-static int hf_umas_read_id_hostname_length;
-static int hf_umas_read_id_hostname;
-static int hf_umas_memory_block_id_block_type;
-static int hf_umas_memory_block_id_folio;
-static int hf_umas_memory_block_id_status;
-static int hf_umas_memory_block_id_memory_length;
-static int hf_umas_read_id_number_of_memory_banks;
-
-static int hf_umas_read_memory_range;
-static int hf_umas_read_memory_length;
-static int hf_umas_read_memory_block_data;
-
-
 /* Initialize the subtree pointers */
 static int ett_umas;
 static int ett_umas_hdr;
 static int ett_umas_read_variable_list;
 static int ett_umas_read_variable_list_item;
+static int ett_umas_write_variable_list;
+static int ett_umas_write_variable_list_item;
 
 static expert_field ei_umas_data_decode;
 
@@ -143,7 +92,7 @@ static const value_string function_code_vals[] = {
     { GET_STATUS_MODULE,        "Get Status Module" },
     { RESPONSE_OK,              "Response Meaning OK" },
     { RESPONSE_ERROR,           "Response Meaning Error" },
-    { 0,                      NULL }
+    { 0,                        NULL }
 };
 
 static const value_string memory_block_id_type[] = {
@@ -180,112 +129,141 @@ classify_umas_packet(packet_info *pinfo, uint8_t function_code)
 
 /* Dissect the Modbus Payload.  Called from either Modbus/TCP or Modbus RTU Dissector */
 static int
-dissect_umas_pdu_request(tvbuff_t* tvb, packet_info* pinfo, proto_tree* tree, void* data, uint8_t function_code, int offset)
+dissect_umas_pdu_request(tvbuff_t* tvb, packet_info* pinfo, proto_tree* tree, void* data, uint8_t function_code, int offset, umas_request_info_t* pkt_info)
 {
+    char item_name[100];
+    int i;
+    int current_offset = 0;
+
     switch (function_code) {
     case INIT_COMM:
-        uint8_t init_comm_sub_code = tvb_get_uint8(tvb, offset);
-        proto_tree_add_uint(tree, hf_umas_init_sub_code, tvb, offset, 1, init_comm_sub_code);
+        proto_tree_add_item_new(tree, proto_registrar_get_byname("umas.init.sub_code"), tvb, offset, 1, ENC_LITTLE_ENDIAN);
         break;
     case READ_ID:
         // Nothing to Dissect
         break;
     case READ_PROJECT_INFO:
-        uint8_t project_info_sub_code = tvb_get_uint8(tvb, offset);
-        proto_tree_add_uint(tree, hf_umas_project_info_sub_code, tvb, offset, 1, project_info_sub_code);
+        proto_tree_add_item_new(tree, proto_registrar_get_byname("umas.project_info.sub_code"), tvb, offset, 1, ENC_LITTLE_ENDIAN);
         break;
     case READ_PLC_INFO:
         // Nothing to Dissect
         break;
     case READ_MEMORY_BLOCK:
-        uint8_t umas_read_block_range = tvb_get_uint8(tvb, offset);
-        uint16_t umas_read_block_block_number = tvb_get_uint16(tvb, offset + 1, ENC_LITTLE_ENDIAN);
-        uint16_t umas_read_block_offset = tvb_get_uint16(tvb, offset + 3, ENC_LITTLE_ENDIAN);
-        tvb_get_ntohs(tvb, offset + 5);
-        uint16_t umas_read_block_number_bytes = tvb_get_uint16(tvb, offset + 7, ENC_LITTLE_ENDIAN);
-        
-        proto_tree_add_uint(tree, hf_umas_read_block_range, tvb, offset, 1, umas_read_block_range);
-        proto_tree_add_uint(tree, hf_umas_read_block_block_number, tvb, offset + 1, 2, umas_read_block_block_number);
-        proto_tree_add_uint(tree, hf_umas_read_block_offset, tvb, offset + 3, 2, umas_read_block_offset);
-        proto_tree_add_uint(tree, hf_umas_read_block_number_bytes, tvb, offset + 7, 2, umas_read_block_number_bytes);
+        int* umas_read_block_block_number = wmem_alloc(wmem_file_scope(), sizeof * umas_read_block_block_number);
+        int* umas_read_block_offset = wmem_alloc(wmem_file_scope(), sizeof * umas_read_block_offset);
+
+        proto_tree_add_item_new(tree, proto_registrar_get_byname("umas.read_block.range"), tvb, offset, 1, ENC_LITTLE_ENDIAN);
+        proto_tree_add_item_ret_uint(tree, proto_registrar_get_id_byname("umas.read_block.block_no"), tvb, offset + 1, 2, ENC_LITTLE_ENDIAN, umas_read_block_block_number);
+        proto_tree_add_item_ret_uint(tree, proto_registrar_get_id_byname("umas.read_block.offset"), tvb, offset + 3, 2, ENC_LITTLE_ENDIAN, umas_read_block_offset);
+        proto_tree_add_item_new(tree, proto_registrar_get_byname("umas.read_block.no_bytes"), tvb, offset + 7, 2, ENC_LITTLE_ENDIAN);
+
+        pkt_info->block_no = *umas_read_block_block_number;
+        pkt_info->offset = *umas_read_block_offset;
         break;
     case READ_VARIABLES:
-        uint32_t umas_read_variable_crc = tvb_get_uint32(tvb, offset, ENC_LITTLE_ENDIAN);
-        uint8_t umas_read_variable_count = tvb_get_uint8(tvb, offset + 4);
-
-        proto_tree_add_uint(tree, hf_umas_read_variable_crc, tvb, offset, 4, umas_read_variable_crc);
-        proto_tree_add_uint(tree, hf_umas_read_variable_count, tvb, offset + 4, 1, umas_read_variable_count);
+        int* umas_read_variable_count = wmem_alloc(wmem_file_scope(), sizeof * umas_read_variable_count);
+                        
+        proto_tree_add_item_new(tree, proto_registrar_get_byname("umas.read_variable.crc"), tvb, offset, 4, ENC_LITTLE_ENDIAN);
+        proto_tree_add_item_ret_uint(tree, proto_registrar_get_id_byname("umas.read_variable.count"), tvb, offset + 4, 1, ENC_LITTLE_ENDIAN, umas_read_variable_count);
                 
-        proto_tree* variable_list_tree = proto_tree_add_subtree(tree, tvb, offset + 5, umas_read_variable_count, ett_umas_read_variable_list, NULL, "Variable List");
+        proto_tree* variable_list_tree = proto_tree_add_subtree(tree, tvb, offset + 5, *umas_read_variable_count, ett_umas_read_variable_list, NULL, "Variable List");
 
         uint8_t umas_read_variable_dummy;
         proto_tree* variable_list_item_tree;
-        uint8_t umas_read_variable_list_buffer;
-        uint8_t umas_read_variable_list_is_array;
-        uint8_t umas_read_variable_list_data_type_size;
+        
         uint16_t umas_read_variable_list_block_number;
         uint16_t umas_read_variable_list_base_offset;
         uint8_t umas_read_variable_list_offset;
-        uint16_t umas_read_variable_list_array_length;
+        
 
-        char item_name[100];
-        int i;
-        int current_offset = offset + 5;
-        for (i = 0; i < umas_read_variable_count; ++i) {
-            umas_read_variable_list_buffer = tvb_get_uint8(tvb, current_offset);
-            umas_read_variable_list_is_array = umas_read_variable_list_buffer & 0xF0;
-            umas_read_variable_list_data_type_size = umas_read_variable_list_buffer & 0x0F;
-            umas_read_variable_list_block_number = tvb_get_uint16(tvb, current_offset + 1, ENC_LITTLE_ENDIAN);
-            umas_read_variable_list_base_offset = tvb_get_uint16(tvb, current_offset + 4, ENC_LITTLE_ENDIAN);
-            umas_read_variable_list_offset = tvb_get_uint8(tvb, current_offset + 6);
+        
+        current_offset = offset + 5;
+        for (i = 0; i < *umas_read_variable_count; ++i) {
+            uint8_t umas_read_variable_list_buffer = tvb_get_uint8(tvb, current_offset);
+            uint8_t umas_read_variable_list_is_array = umas_read_variable_list_buffer & 0xF0;
+            uint8_t umas_read_variable_list_data_type_size = umas_read_variable_list_buffer & 0x0F;
+            uint16_t umas_read_variable_list_block_number = tvb_get_uint16(tvb, current_offset + 1, ENC_LITTLE_ENDIAN);
+            uint16_t umas_read_variable_list_base_offset = tvb_get_uint16(tvb, current_offset + 4, ENC_LITTLE_ENDIAN);
+            uint8_t umas_read_variable_list_offset = tvb_get_uint8(tvb, current_offset + 6);
+
+            int packet_size = 7;
             if (umas_read_variable_list_is_array != 0) {
-                umas_read_variable_list_array_length = tvb_get_uint16(tvb, current_offset + 7, ENC_LITTLE_ENDIAN);
+                packet_size = 9;
             }
-            
             sprintf(item_name, "Address %d,%d - Symbol %s", umas_read_variable_list_block_number, umas_read_variable_list_base_offset + umas_read_variable_list_offset, "TODO:- Tag Name Please");
+            variable_list_item_tree = proto_tree_add_subtree(variable_list_tree, tvb, current_offset, packet_size, ett_umas_read_variable_list_item, NULL, item_name);
 
+            proto_tree_add_uint(variable_list_item_tree, proto_registrar_get_id_byname("umas.read_variable.list.is_array"), tvb, current_offset, 1, umas_read_variable_list_is_array);
+            proto_tree_add_uint(variable_list_item_tree, proto_registrar_get_id_byname("umas.read_variable.list.data_type_size_index"), tvb, current_offset, 1, umas_read_variable_list_data_type_size);
+            proto_tree_add_uint(variable_list_item_tree, proto_registrar_get_id_byname("umas.read_variable.list.block_no"), tvb, current_offset + 1, 2, umas_read_variable_list_block_number);
+            proto_tree_add_uint(variable_list_item_tree, proto_registrar_get_id_byname("umas.read_variable.list.base_offset"), tvb, current_offset + 4, 2, umas_read_variable_list_base_offset);
+            proto_tree_add_uint(variable_list_item_tree, proto_registrar_get_id_byname("umas.read_variable.list.offset"), tvb, current_offset + 6, 1, umas_read_variable_list_offset);
+                       
             if (umas_read_variable_list_is_array != 0) {
-                variable_list_item_tree = proto_tree_add_subtree(variable_list_tree, tvb, current_offset, 9, ett_umas_read_variable_list_item, NULL, item_name);
+                proto_tree_add_item_new(variable_list_item_tree, proto_registrar_get_byname("umas.read_variable.list.array_length"), tvb, current_offset + 7, 2, ENC_LITTLE_ENDIAN);
             }
-            else {
-                variable_list_item_tree = proto_tree_add_subtree(variable_list_tree, tvb, current_offset, 7, ett_umas_read_variable_list_item, NULL, item_name);
-            }
+            current_offset += packet_size;
+        }
+        break;
+    case WRITE_VARIABLES:
+        int* umas_write_variable_count = wmem_alloc(wmem_file_scope(), sizeof * umas_write_variable_count);
 
-            proto_tree_add_uint(variable_list_item_tree, hf_umas_read_variable_list_is_array, tvb, current_offset, 1, umas_read_variable_list_is_array);
-            proto_tree_add_uint(variable_list_item_tree, hf_umas_read_variable_list_data_type_size, tvb, current_offset, 1, umas_read_variable_list_data_type_size);
-            proto_tree_add_uint(variable_list_item_tree, hf_umas_read_variable_list_block_number, tvb, current_offset + 1, 2, umas_read_variable_list_block_number);
-            proto_tree_add_uint(variable_list_item_tree, hf_umas_read_variable_list_base_offset, tvb, current_offset + 4, 2, umas_read_variable_list_base_offset);
-            proto_tree_add_uint(variable_list_item_tree, hf_umas_read_variable_list_offset, tvb, current_offset + 6, 1, umas_read_variable_list_offset);
-            if (umas_read_variable_list_is_array != 0) {
-                proto_tree_add_uint(variable_list_item_tree, hf_umas_read_variable_list_array_length, tvb, current_offset + 7, 2, umas_read_variable_list_array_length);
-                current_offset += 9;
-            }
-            else {
-                current_offset += 7;
-            }
+        proto_tree_add_item_new(tree, proto_registrar_get_byname("umas.write_variable.crc"), tvb, offset, 4, ENC_LITTLE_ENDIAN);
+        proto_tree_add_item_ret_uint(tree, proto_registrar_get_id_byname("umas.write_variable.count"), tvb, offset + 4, 1, ENC_LITTLE_ENDIAN, umas_write_variable_count);
 
+        proto_tree* write_variable_list_tree = proto_tree_add_subtree(tree, tvb, offset + 5, *umas_write_variable_count, ett_umas_write_variable_list, NULL, "Variable List");
+
+        uint8_t umas_write_variable_dummy;
+        proto_tree* write_variable_list_item_tree;
+
+        uint16_t umas_write_variable_list_block_number;
+        uint16_t umas_write_variable_list_base_offset;
+        uint8_t umas_write_variable_list_offset;
+
+
+        current_offset = offset + 5;
+        for (i = 0; i < *umas_write_variable_count; ++i) {
+            uint8_t umas_write_variable_list_buffer = tvb_get_uint8(tvb, current_offset);
+            uint8_t umas_write_variable_list_is_array = umas_write_variable_list_buffer & 0xF0;
+            uint8_t umas_write_variable_list_data_type_size = umas_write_variable_list_buffer & 0x0F;
+            uint16_t umas_write_variable_list_block_number = tvb_get_uint16(tvb, current_offset + 1, ENC_LITTLE_ENDIAN);
+            uint16_t umas_write_variable_list_base_offset = tvb_get_uint16(tvb, current_offset + 3, ENC_LITTLE_ENDIAN);
+            uint8_t umas_write_variable_list_offset = tvb_get_uint8(tvb, current_offset + 5);
             
+
+            int packet_size = 7;
+            sprintf(item_name, "Address %d,%d - Symbol %s", umas_write_variable_list_block_number, umas_write_variable_list_base_offset + umas_write_variable_list_offset, "TODO:- Tag Name Please");
+            write_variable_list_item_tree = proto_tree_add_subtree(write_variable_list_tree, tvb, current_offset, packet_size, ett_umas_write_variable_list_item, NULL, item_name);
+
+            proto_tree_add_uint(write_variable_list_item_tree, proto_registrar_get_id_byname("umas.write_variable.list.is_array"), tvb, current_offset, 1, umas_write_variable_list_is_array);
+            proto_tree_add_uint(write_variable_list_item_tree, proto_registrar_get_id_byname("umas.write_variable.list.data_type_size_index"), tvb, current_offset, 1, umas_write_variable_list_data_type_size);
+            proto_tree_add_uint(write_variable_list_item_tree, proto_registrar_get_id_byname("umas.write_variable.list.block_no"), tvb, current_offset + 1, 2, umas_write_variable_list_block_number);
+            proto_tree_add_uint(write_variable_list_item_tree, proto_registrar_get_id_byname("umas.write_variable.list.base_offset"), tvb, current_offset + 3, 2, umas_write_variable_list_base_offset);
+            proto_tree_add_uint(write_variable_list_item_tree, proto_registrar_get_id_byname("umas.write_variable.list.offset"), tvb, current_offset + 5, 2, umas_write_variable_list_offset);
+            proto_tree_add_item(write_variable_list_item_tree, proto_registrar_get_id_byname("umas.write_variable.list.data"), tvb, current_offset + 7, umas_write_variable_list_data_type_size, ENC_NA);
+                        
+            current_offset += packet_size + umas_write_variable_list_data_type_size;
         }
         break;
     case DATA_DICTIONARY:
         uint16_t umas_data_dictionary_record_type = tvb_get_uint16(tvb, offset, ENC_LITTLE_ENDIAN);
-        uint8_t umas_data_dictionary_record_index = tvb_get_uint8(tvb, offset + 2);
         uint16_t umas_data_dictionary_hardware_id = tvb_get_uint32(tvb, offset + 3, ENC_LITTLE_ENDIAN);
         uint16_t umas_data_dictionary_block_number = tvb_get_uint16(tvb, offset + 7, ENC_LITTLE_ENDIAN);
-        uint16_t umas_data_dictionary_offset = tvb_get_uint16(tvb, offset + 9, ENC_LITTLE_ENDIAN);
-        tvb_get_ntohs(tvb, offset + 11);
+        
+        pkt_info->record_type = umas_data_dictionary_record_type;
+        pkt_info->block_no = umas_data_dictionary_block_number;
+        
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.data_dictionary.record_type"), tvb, offset, 2, umas_data_dictionary_record_type);
+        proto_tree_add_item_new(tree, proto_registrar_get_byname("umas.data_dictionary.index"), tvb, offset + 2, 1, ENC_LITTLE_ENDIAN);
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.data_dictionary.hardware_id"), tvb, offset + 3, 4, umas_data_dictionary_hardware_id);
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.data_dictionary.block_no"), tvb, offset + 7, 2, umas_data_dictionary_block_number);
 
-        proto_tree_add_uint(tree, hf_umas_data_dictionary_record_type, tvb, offset, 2, umas_data_dictionary_record_type);
-        proto_tree_add_uint(tree, hf_umas_data_dictionary_record_index, tvb, offset + 2, 1, umas_data_dictionary_record_index);
-        proto_tree_add_uint(tree, hf_umas_data_dictionary_hardware_id, tvb, offset + 3, 4, umas_data_dictionary_hardware_id);
-        proto_tree_add_uint(tree, hf_umas_data_dictionary_block_number, tvb, offset + 7, 2, umas_data_dictionary_block_number);
-        proto_tree_add_uint(tree, hf_umas_data_dictionary_offset, tvb, offset + 9, 2, umas_data_dictionary_offset);
-
+        if (umas_data_dictionary_block_number == 0xFFFF) {
+            uint16_t umas_data_dictionary_offset = tvb_get_uint16(tvb, offset + 8, ENC_LITTLE_ENDIAN);
+            pkt_info->offset = umas_data_dictionary_offset;
+            proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.data_dictionary.offset"), tvb, offset + 9, 2, umas_data_dictionary_offset);
+        }
         break;
-
-        static int hf_umas_read_variable_crc;
-        static int hf_umas_read_variable_count;
-
     default:
         break;
     };
@@ -294,8 +272,10 @@ dissect_umas_pdu_request(tvbuff_t* tvb, packet_info* pinfo, proto_tree* tree, vo
 
 /* Dissect the Modbus Payload.  Called from either Modbus/TCP or Modbus RTU Dissector */
 static int
-dissect_umas_pdu_response(tvbuff_t* tvb, packet_info* pinfo, proto_tree* tree, void* data, uint8_t function_code, int offset)
+dissect_umas_pdu_response(tvbuff_t* tvb, packet_info* pinfo, proto_tree* tree, void* data, uint8_t function_code, int offset, umas_request_info_t*  pkt_info)
 {
+    int i = 0;
+
     switch (function_code) {
     case INIT_COMM:
         uint16_t max_frame_size = tvb_get_uint16(tvb, offset, ENC_LITTLE_ENDIAN);
@@ -304,11 +284,11 @@ dissect_umas_pdu_response(tvbuff_t* tvb, packet_info* pinfo, proto_tree* tree, v
         uint8_t hostname_length = tvb_get_uint8(tvb, offset + 12);
         const char* hostname = (char*)tvb_get_string_enc(wmem_file_scope(), tvb, offset + 13, hostname_length, ENC_UTF_8);
 
-        proto_tree_add_uint(tree, hf_umas_init_comms_max_frame_size, tvb, offset, 2, max_frame_size);
-        proto_tree_add_uint(tree, hf_umas_init_comms_firmware_version, tvb, offset + 2, 2, firmware_version);
-        proto_tree_add_uint(tree, hf_umas_init_comms_internal_code, tvb, offset + 8, 4, internal_code);
-        proto_tree_add_uint(tree, hf_umas_init_comms_hostname_length, tvb, offset + 12, 1, hostname_length);
-        proto_tree_add_string(tree, hf_umas_init_comms_hostname, tvb, offset + 13, hostname_length, hostname);
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.init_comms.max_frame_size"), tvb, offset, 2, max_frame_size);
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.init_comms.firmware_version"), tvb, offset + 2, 2, firmware_version);
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.init_comms.internal_code"), tvb, offset + 8, 4, internal_code);
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.init_comms.hostname_length"), tvb, offset + 12, 1, hostname_length);
+        proto_tree_add_string(tree, proto_registrar_get_id_byname("umas.init_comms.hostname"), tvb, offset + 13, hostname_length, hostname);
 
         break;
     case READ_ID:
@@ -324,20 +304,20 @@ dissect_umas_pdu_response(tvbuff_t* tvb, packet_info* pinfo, proto_tree* tree, v
         const char* umas_read_id_hostname = (char*)tvb_get_string_enc(wmem_file_scope(), tvb, offset + 23, umas_read_id_hostname_length, ENC_UTF_8);
         uint8_t umas_read_id_number_of_memory_banks = tvb_get_uint8(tvb, offset + 23 + umas_read_id_hostname_length);
 
-        proto_tree_add_uint(tree, hf_umas_read_id_range, tvb, offset, 2, umas_read_id_range);
-        proto_tree_add_uint(tree, hf_umas_read_id_ident, tvb, offset + 2, 4, umas_read_id_ident);
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.read_id.range"), tvb, offset, 2, umas_read_id_range);
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.read_id.id"), tvb, offset + 2, 4, umas_read_id_ident);
 
-        proto_tree_add_uint(tree, hf_umas_read_id_model, tvb, offset + 6, 2, umas_read_id_model);
-        proto_tree_add_uint(tree, hf_umas_read_id_com_version, tvb, offset + 8, 2, umas_read_id_com_version);
-        proto_tree_add_uint(tree, hf_umas_read_id_com_patch, tvb, offset + 10, 2, umas_read_id_com_patch);
-        proto_tree_add_uint(tree, hf_umas_read_id_int_version, tvb, offset + 12, 2, umas_read_id_int_version);
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.read_id.model"), tvb, offset + 6, 2, umas_read_id_model);
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.read_id.com_version"), tvb, offset + 8, 2, umas_read_id_com_version);
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.read_id.com_patch"), tvb, offset + 10, 2, umas_read_id_com_patch);
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.read_id.int_version"), tvb, offset + 12, 2, umas_read_id_int_version);
 
-        proto_tree_add_uint(tree, hf_umas_read_id_hardware_version, tvb, offset + 14, 2, umas_read_id_hardware_version);
-        proto_tree_add_uint(tree, hf_umas_read_id_crash_code, tvb, offset + 16, 4, umas_read_id_crash_code);
-        proto_tree_add_uint(tree, hf_umas_read_id_hostname_length, tvb, offset + 22, 1, umas_read_id_hostname_length);
-        proto_tree_add_string(tree, hf_umas_read_id_hostname, tvb, offset + 23, umas_read_id_hostname_length, umas_read_id_hostname);
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.read_id.hardware_version"), tvb, offset + 14, 2, umas_read_id_hardware_version);
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.read_id.crash_code"), tvb, offset + 16, 4, umas_read_id_crash_code);
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.read_id.hostname_length"), tvb, offset + 22, 1, umas_read_id_hostname_length);
+        proto_tree_add_string(tree, proto_registrar_get_id_byname("umas.read_id.hostname"), tvb, offset + 23, umas_read_id_hostname_length, umas_read_id_hostname);
 
-        proto_tree_add_uint(tree, hf_umas_read_id_number_of_memory_banks, tvb, offset + 23 + umas_read_id_hostname_length, 1, umas_read_id_number_of_memory_banks);
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.read_id.no_memory_bank"), tvb, offset + 23 + umas_read_id_hostname_length, 1, umas_read_id_number_of_memory_banks);
         proto_tree* block_list_tree = proto_tree_add_subtree(tree, tvb, offset + 23 + umas_read_id_hostname_length + 1, umas_read_id_number_of_memory_banks * 4, ett_umas_read_variable_list, NULL, "Block List");
 
 
@@ -349,7 +329,7 @@ dissect_umas_pdu_response(tvbuff_t* tvb, packet_info* pinfo, proto_tree* tree, v
         proto_tree* block_list_item_tree;
 
         char item_name[100];
-        int i;
+        
         int current_offset = offset + 5;
         for (i = 0; i < umas_read_id_number_of_memory_banks; ++i) {
             umas_memory_block_id_block_type = tvb_get_uint8(tvb, block_start_offset);
@@ -360,10 +340,10 @@ dissect_umas_pdu_response(tvbuff_t* tvb, packet_info* pinfo, proto_tree* tree, v
             sprintf(item_name, "Type:- %s, Folio:- %d, Status:- %d, Length:- %d", val_to_str(umas_memory_block_id_block_type, memory_block_id_type, "UNKNOWN"), umas_memory_block_id_folio, umas_memory_block_id_status, umas_memory_block_id_memory_length);
             block_list_item_tree = proto_tree_add_subtree(block_list_tree, tvb, block_start_offset, 8, ett_umas_read_variable_list_item, NULL, item_name);
 
-            proto_tree_add_uint(block_list_item_tree, hf_umas_memory_block_id_block_type, tvb, block_start_offset, 1, umas_memory_block_id_block_type);
-            proto_tree_add_uint(block_list_item_tree, hf_umas_memory_block_id_folio, tvb, block_start_offset + 1, 1, umas_memory_block_id_folio);
-            proto_tree_add_uint(block_list_item_tree, hf_umas_memory_block_id_status, tvb, block_start_offset + 2, 2, umas_memory_block_id_status);
-            proto_tree_add_uint(block_list_item_tree, hf_umas_memory_block_id_memory_length, tvb, block_start_offset + 4, 4, umas_memory_block_id_memory_length);
+            proto_tree_add_uint(block_list_item_tree, proto_registrar_get_id_byname("umas.read_id.no_memory_bank"), tvb, block_start_offset, 1, umas_memory_block_id_block_type);
+            proto_tree_add_uint(block_list_item_tree, proto_registrar_get_id_byname("umas.read_id.folio"), tvb, block_start_offset + 1, 1, umas_memory_block_id_folio);
+            proto_tree_add_uint(block_list_item_tree, proto_registrar_get_id_byname("umas.read_id.status"), tvb, block_start_offset + 2, 2, umas_memory_block_id_status);
+            proto_tree_add_uint(block_list_item_tree, proto_registrar_get_id_byname("umas.read_id.memory_length"), tvb, block_start_offset + 4, 4, umas_memory_block_id_memory_length);
 
             block_start_offset += 8;
         }
@@ -372,10 +352,113 @@ dissect_umas_pdu_response(tvbuff_t* tvb, packet_info* pinfo, proto_tree* tree, v
         uint8_t umas_read_memory_range = tvb_get_uint8(tvb, offset);
         uint16_t umas_read_memory_length = tvb_get_uint16(tvb, offset + 1, ENC_LITTLE_ENDIAN);
 
-        proto_tree_add_uint(tree, hf_umas_read_memory_range, tvb, offset, 1, umas_read_memory_range);
-        proto_tree_add_uint(tree, hf_umas_read_memory_length, tvb, offset + 1, 2, umas_read_memory_length);
-        proto_tree_add_item(tree, hf_umas_read_memory_block_data, tvb, offset + 3, umas_read_memory_length, ENC_NA);
+        uint16_t block_no = pkt_info->block_no;
+        uint16_t block_offset = pkt_info->offset;
 
+
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.read_memory_block.range"), tvb, offset, 1, umas_read_memory_range);
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.read_memory_block.length"), tvb, offset + 1, 2, umas_read_memory_length);
+
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.read_memory_block.block_no"), tvb, offset, 0, block_no);
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.read_memory_block.offset"), tvb, offset, 0, block_offset);
+        break;
+    case DATA_DICTIONARY:
+        proto_tree_add_item_new(tree, proto_registrar_get_byname("umas.data_dictionary.next_address"), tvb, offset, 2, ENC_LITTLE_ENDIAN);
+
+        uint16_t umas_data_dictionary_record_type = pkt_info->record_type;
+        uint16_t umas_data_dictionary_block_number = pkt_info->block_no;
+        uint16_t umas_data_dictionary_block_offset = pkt_info->offset;
+
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.data_dictionary.record_type"), tvb, offset, 0, umas_data_dictionary_record_type);
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.data_dictionary.block_no"), tvb, offset, 0, umas_data_dictionary_block_number);
+        proto_tree_add_uint(tree, proto_registrar_get_id_byname("umas.data_dictionary.offset"), tvb, offset, 0, umas_data_dictionary_block_offset);
+        int* umas_data_dictionary_no_records;
+        proto_tree* umas_data_dictionary_list_item_tree;
+        uint16_t umas_data_dictionary_data_size;
+        uint8_t umas_data_dictionary_class_identifier;
+        uint8_t umas_data_dictionary_data_type;
+        int* umas_data_dictionary_string_length;
+        const uint8_t* umas_data_dictionary_data_type_name;
+        int new_offset;
+
+        switch (umas_data_dictionary_record_type) {
+        case 0xDD02:
+            // DFB Child List
+            if (umas_data_dictionary_block_number != 0xFFFF) {
+                proto_tree* dfb_element_list_tree = proto_tree_add_subtree(tree, tvb, offset + 4, -1, ett_umas_read_variable_list, NULL, "DFB Element List");
+                umas_data_dictionary_no_records = wmem_alloc(wmem_file_scope(), sizeof * umas_data_dictionary_no_records);
+                proto_tree_add_item_ret_uint(dfb_element_list_tree, proto_registrar_get_id_byname("umas.data_dictionary.no_of_records"), tvb, offset + 5, 2, ENC_LITTLE_ENDIAN, umas_data_dictionary_no_records);
+                new_offset = offset + 7;
+                for (i = 0; i < *umas_data_dictionary_no_records; ++i) {
+                    umas_data_dictionary_data_type = tvb_get_uint16(tvb, new_offset, ENC_LITTLE_ENDIAN);
+                    uint16_t umas_data_dictionary_offset = tvb_get_uint16(tvb, new_offset + 2, ENC_LITTLE_ENDIAN);
+
+                    umas_data_dictionary_string_length = wmem_alloc(wmem_file_scope(), sizeof * umas_data_dictionary_string_length);
+                    umas_data_dictionary_data_type_name = tvb_get_stringz_enc(wmem_file_scope(), tvb, new_offset + 8, umas_data_dictionary_string_length, ENC_UTF_8);
+
+                    sprintf(item_name, "%d, %s", umas_data_dictionary_data_type, umas_data_dictionary_data_type_name);
+                    umas_data_dictionary_list_item_tree = proto_tree_add_subtree(dfb_element_list_tree, tvb, new_offset, 0, ett_umas_read_variable_list_item, NULL, item_name);
+
+                    proto_tree_add_uint(umas_data_dictionary_list_item_tree, proto_registrar_get_id_byname("umas.data_dictionary.data_type"), tvb, new_offset, 2, umas_data_dictionary_data_type);
+                    proto_tree_add_uint(umas_data_dictionary_list_item_tree, proto_registrar_get_id_byname("umas.data_dictionary.rel_offset"), tvb, new_offset + 2, 2, umas_data_dictionary_offset);
+                    proto_tree_add_uint(umas_data_dictionary_list_item_tree, proto_registrar_get_id_byname("umas.data_dictionary.length"), tvb, new_offset, 0, *umas_data_dictionary_string_length);
+
+                    proto_tree_add_string(umas_data_dictionary_list_item_tree, proto_registrar_get_id_byname("umas.data_dictionary.name"), tvb, new_offset + 8, *umas_data_dictionary_string_length, umas_data_dictionary_data_type_name);
+                    new_offset += 8 + *umas_data_dictionary_string_length;
+                }
+            }
+            else {
+                // Variable List
+                proto_tree* dfb_element_list_tree = proto_tree_add_subtree(tree, tvb, offset + 4, -1, ett_umas_read_variable_list, NULL, "Variable List");
+                umas_data_dictionary_no_records = wmem_alloc(wmem_file_scope(), sizeof * umas_data_dictionary_no_records);
+                proto_tree_add_item_ret_uint(dfb_element_list_tree, proto_registrar_get_id_byname("umas.data_dictionary.no_of_records"), tvb, offset + 5, 2, ENC_LITTLE_ENDIAN, umas_data_dictionary_no_records);
+                new_offset = offset + 7;
+                for (i = 0; i < *umas_data_dictionary_no_records; ++i) {
+                    umas_data_dictionary_data_type = tvb_get_uint16(tvb, new_offset, ENC_LITTLE_ENDIAN);
+                    uint16_t umas_data_dictionary_offset = tvb_get_uint16(tvb, new_offset + 2, ENC_LITTLE_ENDIAN);
+
+                    umas_data_dictionary_string_length = wmem_alloc(wmem_file_scope(), sizeof * umas_data_dictionary_string_length);
+                    umas_data_dictionary_data_type_name = tvb_get_stringz_enc(wmem_file_scope(), tvb, new_offset + 10, umas_data_dictionary_string_length, ENC_UTF_8);
+
+                    sprintf(item_name, "%d, %s", umas_data_dictionary_data_type, umas_data_dictionary_data_type_name);
+                    umas_data_dictionary_list_item_tree = proto_tree_add_subtree(dfb_element_list_tree, tvb, new_offset, 0, ett_umas_read_variable_list_item, NULL, item_name);
+
+                    proto_tree_add_uint(umas_data_dictionary_list_item_tree, proto_registrar_get_id_byname("umas.data_dictionary.data_type"), tvb, new_offset, 2, umas_data_dictionary_data_type);
+                    proto_tree_add_uint(umas_data_dictionary_list_item_tree, proto_registrar_get_id_byname("umas.data_dictionary.block_no"), tvb, new_offset + 2, 2, umas_data_dictionary_offset);
+                    proto_tree_add_item_new(umas_data_dictionary_list_item_tree, proto_registrar_get_byname("umas.data_dictionary.address"), tvb, new_offset + 4, 2, ENC_LITTLE_ENDIAN);
+                    proto_tree_add_uint(umas_data_dictionary_list_item_tree, proto_registrar_get_id_byname("umas.data_dictionary.length"), tvb, new_offset, 0, *umas_data_dictionary_string_length);
+
+                    proto_tree_add_string(umas_data_dictionary_list_item_tree, proto_registrar_get_id_byname("umas.data_dictionary.name"), tvb, new_offset + 10, *umas_data_dictionary_string_length, umas_data_dictionary_data_type_name);
+                    new_offset += 10 + *umas_data_dictionary_string_length;
+                }
+            }
+
+            break;
+        case 0xDD03:
+            proto_tree* data_type_list_tree = proto_tree_add_subtree(tree, tvb, offset + 4, -1, ett_umas_read_variable_list, NULL, "Data Type List");
+            umas_data_dictionary_no_records = wmem_alloc(wmem_file_scope(), sizeof *umas_data_dictionary_no_records);
+            proto_tree_add_item_ret_uint(data_type_list_tree, proto_registrar_get_id_byname("umas.data_dictionary.no_of_records"), tvb, offset + 4, 2, ENC_LITTLE_ENDIAN, umas_data_dictionary_no_records);
+            new_offset = offset + 6;
+            for (i = 0; i < *umas_data_dictionary_no_records; ++i) {
+                umas_data_dictionary_data_size = tvb_get_uint16(tvb, new_offset, ENC_LITTLE_ENDIAN);
+                umas_data_dictionary_class_identifier = tvb_get_uint8(tvb, new_offset + 4);
+                umas_data_dictionary_data_type = tvb_get_uint8(tvb, new_offset + 5);
+                umas_data_dictionary_string_length = wmem_alloc(wmem_file_scope(), sizeof *umas_data_dictionary_string_length);
+                umas_data_dictionary_data_type_name = tvb_get_stringz_enc(wmem_file_scope(), tvb, new_offset + 7, umas_data_dictionary_string_length, ENC_UTF_8);
+
+                sprintf(item_name, "%d, %s", umas_data_dictionary_data_type, umas_data_dictionary_data_type_name);
+                umas_data_dictionary_list_item_tree = proto_tree_add_subtree(data_type_list_tree, tvb, new_offset, 0, ett_umas_read_variable_list_item, NULL, item_name);
+
+                proto_tree_add_uint(umas_data_dictionary_list_item_tree, proto_registrar_get_id_byname("umas.data_dictionary.data_size"), tvb, new_offset, 2, umas_data_dictionary_data_size);
+                proto_tree_add_uint(umas_data_dictionary_list_item_tree, proto_registrar_get_id_byname("umas.data_dictionary.class_identifier"), tvb, new_offset + 4, 1, umas_data_dictionary_class_identifier);
+                proto_tree_add_uint(umas_data_dictionary_list_item_tree, proto_registrar_get_id_byname("umas.data_dictionary.data_type"), tvb, new_offset + 5, 1, umas_data_dictionary_data_type);
+                proto_tree_add_uint(umas_data_dictionary_list_item_tree, proto_registrar_get_id_byname("umas.data_dictionary.length"), tvb, new_offset, 0, *umas_data_dictionary_string_length);
+
+                proto_tree_add_string(umas_data_dictionary_list_item_tree, proto_registrar_get_id_byname("umas.data_dictionary.name"), tvb, new_offset + 7, *umas_data_dictionary_string_length, umas_data_dictionary_data_type_name);
+                new_offset += 7 + *umas_data_dictionary_string_length;
+            }
+            break;
+        }
     default:
         break;
     };
@@ -400,8 +483,6 @@ dissect_umas(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
     const char*     err_str = "";
     const char*     func_string;
 
-    uint32_t            conv_key;
-
     umas_request_info_t* pkt_info;
 
     offset = 0;
@@ -421,13 +502,17 @@ dissect_umas(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
 
     /* Get the Modbus Packet Data so that we can get the req_frame_number */
     modbus_data = (modbus_pkt_info_t*)p_get_proto_data(wmem_file_scope(), pinfo, proto_modbus, 0);
-    conv_key = (uint32_t)modbus_data->function_code | ((uint32_t)pairing_key << 16);
+    
     
     /* "Request" or "Response" */
     umas_data.packet_type = classify_umas_packet(pinfo, function_code);
     /* Transaction ID is available only in Modbus TCP */
     umas_data.pairing_key = pairing_key;
     umas_data.function_code = function_code;
+
+    /* Add items to protocol tree specific to Modbus RTU */
+    proto_tree_add_uint(umas_tree, proto_registrar_get_id_byname("umas.pairing_key"), tvb, offset, 1, pairing_key);
+    proto_tree_add_uint(umas_tree, proto_registrar_get_id_byname("umas.func_code"), tvb, offset + 1, 1, function_code);
 
     /* Populate conversation instance */
     conversation_t* conversation = NULL;
@@ -446,10 +531,12 @@ dissect_umas(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
 
         if (umas_data.packet_type == QUERY_PACKET) {
             request_function_code = 0;
-            umas_request_info_t* frame_ptr = wmem_new0(wmem_file_scope(), umas_request_info_t);
-            frame_ptr->req_frame_num = pinfo->num;
-            frame_ptr->function_code = umas_data.function_code;
-            wmem_list_prepend(umas_conv_data->umas_request_frame_data, frame_ptr);
+            umas_request_info_t* frame_data = wmem_new0(wmem_file_scope(), umas_request_info_t);
+            frame_data->req_frame_num = pinfo->num;
+            frame_data->function_code = umas_data.function_code;
+            wmem_list_prepend(umas_conv_data->umas_request_frame_data, frame_data);
+            p_add_proto_data(wmem_file_scope(), pinfo, proto_umas, REQUEST_INFO, frame_data);
+            pkt_info = frame_data;
         }
         else if (umas_data.packet_type == RESPONSE_PACKET) {
             umas_request_info_t* request_data;
@@ -466,7 +553,7 @@ dissect_umas(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
                 
                 if (modbus_data->req_frame_num == request_data->req_frame_num) {
                     pkt_info = request_data;
-                    p_add_proto_data(wmem_file_scope(), pinfo, proto_umas, conv_key, request_data);
+                    p_add_proto_data(wmem_file_scope(), pinfo, proto_umas, REQUEST_INFO, request_data);
                     request_found = true;
                 }
                 frame = wmem_list_frame_next(frame);
@@ -474,20 +561,22 @@ dissect_umas(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
         }
     }
     else {
-        pkt_info = (umas_request_info_t*) p_get_proto_data(wmem_file_scope(), pinfo, proto_umas, conv_key);
+        pkt_info = (umas_request_info_t*) p_get_proto_data(wmem_file_scope(), pinfo, proto_umas, REQUEST_INFO);
     }
-
+    
     switch (umas_data.function_code) {
     case RESPONSE_OK:
         pkt_type_str = "Response";
         func_string = val_to_str(pkt_info->function_code, function_code_vals, "Unknown function (%d)");
+        dissect_umas_pdu_response(tvb, pinfo, umas_tree, data, pkt_info->function_code, offset + 2, pkt_info);
         break;
     case RESPONSE_ERROR:
         pkt_type_str = "Error";
         func_string = val_to_str(pkt_info->function_code, function_code_vals, "Unknown function (%d)");
     default:
         pkt_type_str = "Query";
-        func_string = val_to_str(umas_data.function_code, function_code_vals, "Unknown function (%d)");
+        func_string = val_to_str(pkt_info->function_code, function_code_vals, "Unknown function (%d)");
+        dissect_umas_pdu_request(tvb, pinfo, umas_tree, data, function_code, offset + 2, pkt_info);
         break;
     }
 
@@ -502,19 +591,6 @@ dissect_umas(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
             pkt_type_str, function_code, func_string);
     }
 
-    /* Add items to protocol tree specific to Modbus RTU */
-    proto_tree_add_uint(umas_tree, hf_umas_pairing_key, tvb, offset, 1, pairing_key);
-    proto_tree_add_uint(umas_tree, hf_umas_func_code, tvb, offset + 1, 1, function_code);
-
-    switch (umas_data.function_code) {
-    case RESPONSE_OK:
-        dissect_umas_pdu_response(tvb, pinfo, umas_tree, data, pkt_info->function_code, offset + 2);
-    case RESPONSE_ERROR:
-        break;
-    default:
-        dissect_umas_pdu_request(tvb, pinfo, umas_tree, data, function_code, offset + 2);
-    }
-
     return tvb_captured_length(tvb);
 }
 
@@ -525,237 +601,355 @@ proto_register_umas(void)
 {  
     module_t *umas_module;
     expert_module_t* expert_umas;
+
+    static int dummy_int = 0;
+
+    static int hf_ids[100];
         
     /* Modbus/TCP header fields */
     static hf_register_info umas_hf[] = {
-        { &hf_umas_pairing_key,
+        { &hf_ids[0],
             { "Pairing Key", "umas.pairing_key",
             FT_UINT8, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_func_code,
+        { &hf_ids[1],
             { "Function Code", "umas.func_code",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_init_sub_code,
-            { "Init. Sub Code", "umas.init.sub_code",
+        { &hf_ids[2],
+            { "Sub. Code", "umas.init.sub_code",
             FT_UINT8, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_project_info_sub_code,
-            { "Project Info. Sub. Code", "umas.project_info.sub_code",
+        { &hf_ids[3],
+            { "Sub. Code", "umas.project_info.sub_code",
             FT_UINT8, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_block_range,
-            { "Read Memory Block Range", "umas.read_block.range",
+        { &hf_ids[4],
+            { "Range", "umas.read_block.range",
             FT_UINT8, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_block_block_number,
-            { "Read Memory Block Block Number", "umas.read_block.block_number",
+        { &hf_ids[5],
+            { "Block Number", "umas.read_block.block_no",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_block_offset,
-            { "Read Memory Block Offset", "umas.read_block.offset",
+        { &hf_ids[6],
+            { "Offset", "umas.read_block.offset",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_block_number_bytes,
-            { "Read Memory Block Number Of Bytes", "umas.read_block.num_bytes",
+        { &hf_ids[7],
+            { "Number Of Bytes", "umas.read_block.no_bytes",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_data_dictionary_record_type,
-            { "Data Dictionary Record Type", "umas.data_dictionary.record_type",
+        { &hf_ids[8],
+            { "Record Type", "umas.data_dictionary.record_type",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_data_dictionary_record_index,
-            { "Data Dictionary Record Index", "umas.data_dictionary.record_index",
+        { &hf_ids[9],
+            { "Record Index", "umas.data_dictionary.record_index",
             FT_UINT8, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_data_dictionary_hardware_id,
-            { "Data Dictionary Hardware ID", "umas.data_dictionary.hardware_id",
+        { &hf_ids[10],
+            { "Hardware ID", "umas.data_dictionary.hardware_id",
             FT_UINT32, BASE_HEX, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_data_dictionary_block_number,
-            { "Data Dictionary Block Number", "umas.data_dictionary.block_number",
+        { &hf_ids[11],
+            { "Block Number", "umas.data_dictionary.block_no",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_data_dictionary_offset,
-            { "Data Dictionary Offset", "umas.data_dictionary.offset",
+        { &hf_ids[12],
+            { "Offset", "umas.data_dictionary.offset",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_variable_crc,
-            { "Read Variable Calculated CRC", "umas.read_variable.crc",
+        { &hf_ids[13],
+            { "Calculated CRC", "umas.read_variable.crc",
             FT_UINT32, BASE_HEX, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_variable_count,
-            { "Read Variable Count", "umas.read_variable.count",
+        { &hf_ids[14],
+            { "Count", "umas.read_variable.count",
             FT_UINT8, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_variable_list_is_array,
-            { "Read Variable Is Array", "umas.read_variable.list.is_array",
+        { &hf_ids[15],
+            { "Is Array", "umas.read_variable.list.is_array",
             FT_UINT8, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_variable_list_data_type_size,
-            { "Read Variable Data Type Size Index", "umas.read_variable.list.data_type_size_index",
+        { &hf_ids[16],
+            { "Data Type Size Index", "umas.read_variable.list.data_type_size_index",
             FT_UINT8, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_variable_list_block_number,
-            { "Read Variable Block No.", "umas.read_variable.list.block_number",
+        { &hf_ids[17],
+            { "Block No.", "umas.read_variable.list.block_no",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_variable_list_base_offset,
-            { "Read Variable Base Offset", "umas.read_variable.list.base_offset",
+        { &hf_ids[18],
+            { "Base Offset", "umas.read_variable.list.base_offset",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_variable_list_offset,
-            { "Read Variable Offset", "umas.read_variable.list.offset",
+        { &hf_ids[19],
+            { "Offset", "umas.read_variable.list.offset",
             FT_UINT8, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_variable_list_array_length,
-            { "Read Variable Array Length", "umas.read_variable.list.array_length",
+        { &hf_ids[20],
+            { "Array Length", "umas.read_variable.list.array_length",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_init_comms_max_frame_size,
-            { "Init Comms Response Max Frame Size", "umas.init_comms.max_frame_size",
+        { &hf_ids[21],
+            { "Max. Frame Size", "umas.init_comms.max_frame_size",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_init_comms_firmware_version,
-            { "Init Comms Response Firmware Version", "umas.init_comms.firmware_version",
+        { &hf_ids[22],
+            { "Firmware Version", "umas.init_comms.firmware_version",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_init_comms_internal_code,
-            { "Init Comms Response Internal Code", "umas.init_comms.internal_code",
+        { &hf_ids[23],
+            { "Internal Code", "umas.init_comms.internal_code",
             FT_UINT32, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_init_comms_hostname_length,
-            { "Init Comms Response Hostname Length", "umas.init_comms.hostname_length",
+        { &hf_ids[24],
+            { "Hostname Length", "umas.init_comms.hostname_length",
             FT_UINT8, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_init_comms_hostname,
-            { "Init Comms Response Hostname", "umas.init_comms.hostname",
+        { &hf_ids[25],
+            { "Hostname", "umas.init_comms.hostname",
             FT_STRING, BASE_STR_WSP, NULL, 0x0,
             NULL, HFILL }
         },
-
-        { &hf_umas_read_id_range,
-            { "Read ID Response Range", "umas.read_id.range",
+        { &hf_ids[26],
+            { "Range", "umas.read_id.range",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_id_ident,
-            { "Read ID Response Identification", "umas.read_id.id",
+        { &hf_ids[27],
+            { "Id.", "umas.read_id.id",
             FT_UINT32, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_id_model,
-            { "Read ID Response Model", "umas.read_id.model",
+        { &hf_ids[28],
+            { "Model", "umas.read_id.model",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_id_com_version,
-            { "Read ID Response Com Version", "umas.read_id.com_version",
+        { &hf_ids[29],
+            { "Com Version", "umas.read_id.com_version",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_id_com_patch,
-            { "Read ID Response Com Patch", "umas.read_id.com_patch",
+        { &hf_ids[30],
+            { "Com Patch", "umas.read_id.com_patch",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_id_int_version,
-            { "Read ID Response Int Version", "umas.read_id.int_version",
+        { &hf_ids[31],
+            { "Int Version", "umas.read_id.int_version",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_id_hardware_version,
-            { "Read ID Response Hardware Version", "umas.read_id.hardware_version",
+        { &hf_ids[32],
+            { "Hardware Version", "umas.read_id.hardware_version",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_id_crash_code,
-            { "Read ID Response Crash Code", "umas.read_id.crash_code",
+        { &hf_ids[33],
+            { "Crash Code", "umas.read_id.crash_code",
             FT_UINT32, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_id_hostname_length,
-            { "Read ID Response Hostname Length", "umas.read_id.hostname_length",
+        { &hf_ids[34],
+            { "Hostname Length", "umas.read_id.hostname_length",
             FT_UINT8, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_id_hostname,
-            { "Read ID Response Hostname", "umas.read_id.hostname",
+        { &hf_ids[35],
+            { "Hostname", "umas.read_id.hostname",
             FT_STRING, BASE_STR_WSP, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_memory_block_id_block_type,
-            { "Read ID Response Block Type", "umas.read_id.block_type",
+        { &hf_ids[36],
+            { "Block Type", "umas.read_id.block_type",
             FT_UINT8, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_memory_block_id_folio,
-            { "Read ID Response Folio", "umas.read_id.folio",
+        { &hf_ids[37],
+            { "Folio", "umas.read_id.folio",
             FT_UINT8, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_memory_block_id_status,
-            { "Read ID Response Status", "umas.read_id.status",
+        { &hf_ids[38],
+            { "Status", "umas.read_id.status",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_memory_block_id_memory_length,
-            { "Read ID Response Memory Length", "umas.read_id.memory_length",
+        { &hf_ids[39],
+            { "Memory Length", "umas.read_id.memory_length",
             FT_UINT32, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_id_number_of_memory_banks,
-            { "Read ID Response Memory Bank Count", "umas.read_id.no_memory_bank",
+        { &hf_ids[40],
+            { "Memory Bank Count", "umas.read_id.no_memory_bank",
             FT_UINT8, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-
-        { &hf_umas_read_memory_range,
+        { &hf_ids[41],
             { "Range", "umas.read_memory_block.range",
             FT_UINT8, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_memory_length,
+        { &hf_ids[42],
             { "Length", "umas.read_memory_block.length",
             FT_UINT16, BASE_DEC, NULL, 0x0,
             NULL, HFILL }
         },
-        { &hf_umas_read_memory_block_data,
+        { &hf_ids[43],
             { "Data",  "umas.read_memory_block.data",
             FT_BYTES,  BASE_NONE, NULL,    0x0, NULL, HFILL }
         },
+        { &hf_ids[44],
+            { "Range", "umas.data_dictionary.range",
+            FT_UINT8, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[45],
+            { "Next Address", "umas.data_dictionary.next_address",
+            FT_UINT16, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[46],
+            { "No. Of Records", "umas.data_dictionary.no_of_records",
+            FT_UINT16, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[47],
+            { "Data Type Size", "umas.data_dictionary.data_size",
+            FT_UINT8, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[48],
+            { "Class Identifier", "umas.data_dictionary.class_identifier",
+            FT_UINT8, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[49],
+            { "Data Type", "umas.data_dictionary.data_type",
+            FT_UINT8, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[50],
+            { "Length", "umas.data_dictionary.length",
+            FT_UINT8, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[51],
+            { "Name", "umas.data_dictionary.name",
+            FT_STRING, BASE_STR_WSP, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[52],
+            { "Range", "umas.read_memory_block.block_no",
+            FT_UINT8, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[53],
+            { "Range", "umas.read_memory_block.offset",
+            FT_UINT8, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[54],
+            { "Relative Offset", "umas.data_dictionary.rel_offset",
+            FT_UINT16, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[55],
+            { "Index", "umas.data_dictionary.index",
+            FT_UINT8, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[56],
+            { "Address", "umas.data_dictionary.address",
+            FT_UINT16, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[57],
+            { "Calculated CRC", "umas.write_variable.crc",
+            FT_UINT32, BASE_HEX, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[58],
+            { "Count", "umas.write_variable.count",
+            FT_UINT8, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[59],
+            { "Is Array", "umas.write_variable.list.is_array",
+            FT_UINT8, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[60],
+            { "Data Type Size Index", "umas.write_variable.list.data_type_size_index",
+            FT_UINT8, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[61],
+            { "Block No.", "umas.write_variable.list.block_no",
+            FT_UINT16, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[62],
+            { "Base Offset", "umas.write_variable.list.base_offset",
+            FT_UINT16, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[63],
+            { "Offset", "umas.write_variable.list.offset",
+            FT_UINT16, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[64],
+            { "Array Length", "umas.write_variable.list.array_length",
+            FT_UINT16, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_ids[65],
+            { "Data",  "umas.write_variable.list.data",
+            FT_BYTES,  BASE_NONE, NULL,    0x0, NULL, HFILL }
+        },
+        { &hf_ids[66],
+            { "Block No.", "umas.data_dictionary.block_no",
+            FT_UINT16, BASE_DEC, NULL, 0x0,
+            NULL, HFILL }
+        },
     };
-
+    
     /* Setup protocol subtree array */
     static int* ett[] = {
         &ett_umas,
         &ett_umas_read_variable_list,
-        &ett_umas_read_variable_list_item
+        &ett_umas_read_variable_list_item,
+        &ett_umas_write_variable_list,
+        &ett_umas_write_variable_list_item
     };
 
     /* Register the protocol name and description */

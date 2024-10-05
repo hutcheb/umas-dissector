@@ -56,9 +56,17 @@
 #define RAM_CPU                     0x01
 #define SD_CARD                     0x04
 
+/* Protocol data Keys */
+#define REQUEST_INFO                0x01
+#define VARIABLE_DATA               0x02
+#define DATATYPE_DATA               0x03
+
 typedef struct {
     uint32_t req_frame_num;
     uint8_t function_code;
+    uint16_t block_no;
+    uint16_t offset;
+    uint16_t record_type;
 } umas_request_info_t;
 
 
